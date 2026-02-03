@@ -8,45 +8,35 @@ app.use(express.json());
 
 const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
 
+// Helper function to delay between requests
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function searchReddit(keyword) {
   const results = [];
   
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json'
+  };
+  
   try {
+    // Main searches with delays
     const searches = [
       `${keyword}`,
-      `${keyword} help`,
-      `${keyword} problem`,
-      `${keyword} recommend`,
       `${keyword} toronto`,
       `${keyword} ontario`,
-      `${keyword} canada`,
-      `${keyword} GTA`
+      `${keyword} problem`,
+      `${keyword} help`
     ];
     
     for (const query of searches) {
-      const response = await axios.get(`https://www.reddit.com/search.json`, {
-        params: { q: query, sort: 'relevance', limit: 25, t: 'year' },
-        headers: { 'User-Agent': 'KeywordBot/1.0' }
-      });
-      
-      const posts = response.data?.data?.children || [];
-      for (const post of posts) {
-        results.push({
-          title: post.data.title,
-          subreddit: post.data.subreddit,
-          text: post.data.selftext?.substring(0, 300) || '',
-          url: `https://reddit.com${post.data.permalink}`
-        });
-      }
-    }
-    
-    // Search Ontario/Toronto specific subreddits
-    const localSubs = ['toronto', 'askTO', 'ontario', 'OntarioCanada', 'PersonalFinanceCanada', 'canadasmallbusiness'];
-    for (const sub of localSubs) {
       try {
-        const response = await axios.get(`https://www.reddit.com/r/${sub}/search.json`, {
-          params: { q: keyword, restrict_sr: true, sort: 'relevance', limit: 20, t: 'all' },
-          headers: { 'User-Agent': 'KeywordBot/1.0' }
+        await delay(1000); // Wait 1 second between requests
+        
+        const response = await axios.get(`https://www.reddit.com/search.json`, {
+          params: { q: query, sort: 'relevance', limit: 20, t: 'year' },
+          headers: headers,
+          timeout: 10000
         });
         
         const posts = response.data?.data?.children || [];
@@ -58,7 +48,35 @@ async function searchReddit(keyword) {
             url: `https://reddit.com${post.data.permalink}`
           });
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(`Search error for "${query}":`, e.message);
+      }
+    }
+    
+    // Search local subreddits with delays
+    const localSubs = ['toronto', 'askTO', 'ontario'];
+    for (const sub of localSubs) {
+      try {
+        await delay(1000);
+        
+        const response = await axios.get(`https://www.reddit.com/r/${sub}/search.json`, {
+          params: { q: keyword, restrict_sr: true, sort: 'relevance', limit: 15, t: 'all' },
+          headers: headers,
+          timeout: 10000
+        });
+        
+        const posts = response.data?.data?.children || [];
+        for (const post of posts) {
+          results.push({
+            title: post.data.title,
+            subreddit: post.data.subreddit,
+            text: post.data.selftext?.substring(0, 300) || '',
+            url: `https://reddit.com${post.data.permalink}`
+          });
+        }
+      } catch (e) {
+        console.error(`Subreddit search error for r/${sub}:`, e.message);
+      }
     }
     
   } catch (e) {
@@ -71,7 +89,7 @@ async function searchReddit(keyword) {
     if (seen.has(r.url)) return false;
     seen.add(r.url);
     return true;
-  }).slice(0, 60);
+  }).slice(0, 50);
 }
 
 async function analyzeWithClaude(keyword, posts) {
@@ -89,7 +107,6 @@ IMPORTANT: IGNORE and DO NOT include any of the following:
 - Posts that are just ads disguised as questions
 - "Check out my business" or "We offer..." type posts
 - Affiliate links or promotional content
-- Press releases or company announcements
 
 ONLY include genuine questions, complaints, and discussions from real users/customers.
 
@@ -100,13 +117,13 @@ Based ONLY on posts that are actually relevant to "${keyword}" and are GENUINE u
 
 1. QUESTIONS (5-8): Real questions people are asking about ${keyword}. Only include genuine questions from users seeking help or information.
 
-2. PAIN POINTS (5-8): Specific problems, frustrations, or complaints about ${keyword}. These should be real user experiences, not fabricated marketing pain points.
+2. PAIN POINTS (5-8): Specific problems, frustrations, or complaints about ${keyword}. These should be real user experiences.
 
-3. RELATED KEYWORDS (8-12): Other terms, phrases, or topics people mention alongside ${keyword}. These should be useful for SEO.
+3. RELATED KEYWORDS (8-12): Other terms, phrases, or topics people mention alongside ${keyword}. Useful for SEO.
 
-4. CONTENT IDEAS (5-6): Blog post titles that would answer these questions or solve these pain points. Make them specific and actionable for a Toronto/GTA/Ontario audience.
+4. CONTENT IDEAS (5-6): Blog post titles that would answer these questions or solve these pain points. Make them specific for Toronto/GTA/Ontario audience.
 
-5. LOCAL INSIGHTS: Note any posts specifically from Toronto, GTA, or Ontario. Highlight any local trends, preferences, or concerns unique to this market.
+5. LOCAL INSIGHTS: Note any posts from Toronto, GTA, or Ontario. Highlight local trends or concerns.
 
 Format your response EXACTLY like this:
 
@@ -129,9 +146,9 @@ keyword1, keyword2, keyword3...
 ...
 
 🍁 TORONTO/GTA/ONTARIO INSIGHTS:
-[any local insights, trends, or "No local posts found - here are general insights that apply to this market"]
+[local insights or "No local posts found - general insights apply"]
 
-If there are NO relevant non-promotional posts about "${keyword}", say so clearly and suggest the user try a different keyword.`;
+If NO relevant non-promotional posts exist, say so and suggest a different keyword.`;
 
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
@@ -154,7 +171,7 @@ app.post('/slack/commands/reddit', async (req, res) => {
   
   res.json({
     response_type: 'in_channel',
-    text: `🔍 Researching *"${keyword}"* on Reddit...\n_Searching Toronto, GTA & Ontario communities (filtering out spam/ads)..._`
+    text: `🔍 Researching *"${keyword}"* on Reddit...\n_Searching Toronto, GTA & Ontario (this may take 15-20 seconds)..._`
   });
   
   const responseUrl = req.body.response_url;
@@ -165,14 +182,14 @@ app.post('/slack/commands/reddit', async (req, res) => {
     if (posts.length === 0) {
       await axios.post(responseUrl, {
         response_type: 'in_channel',
-        text: `❌ No Reddit posts found for "${keyword}". Try a different keyword.`
+        text: `❌ No Reddit posts found for "${keyword}". Try a broader keyword like "phone answering" instead of "AI phone answering".`
       });
       return;
     }
     
     const analysis = await analyzeWithClaude(keyword, posts);
     
-    const message = `*📊 Reddit Research: "${keyword}"*\n_Analyzed ${posts.length} posts (Toronto/GTA/Ontario focused, spam filtered)_\n\n${analysis}`;
+    const message = `*📊 Reddit Research: "${keyword}"*\n_Analyzed ${posts.length} posts (Toronto/GTA/Ontario focused)_\n\n${analysis}`;
     
     await axios.post(responseUrl, {
       response_type: 'in_channel',
@@ -189,7 +206,7 @@ app.post('/slack/commands/reddit', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('Reddit Keyword Bot + Claude AI 🍁 Toronto/GTA/Ontario (Spam Filtered)');
+  res.send('Reddit Keyword Bot + Claude AI 🍁');
 });
 
 const PORT = process.env.PORT || 3000;
