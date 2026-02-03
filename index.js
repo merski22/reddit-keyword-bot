@@ -7,31 +7,37 @@ app.use(express.json());
 
 async function searchReddit(keyword) {
   const results = [];
-  const queries = [`${keyword}+help`, `${keyword}+problem`, `${keyword}+recommend`, keyword];
   
-  for (const query of queries) {
-    try {
-      const response = await axios.get(`https://www.reddit.com/search.json`, {
-        params: { q: query, sort: 'relevance', limit: 10, t: 'year' },
-        headers: { 'User-Agent': 'KeywordBot/1.0' }
-      });
+  try {
+    // Search with exact keyword
+    const response = await axios.get(`https://www.reddit.com/search.json`, {
+      params: { q: keyword, sort: 'relevance', limit: 100, t: 'year' },
+      headers: { 'User-Agent': 'KeywordBot/1.0' }
+    });
+    
+    const posts = response.data?.data?.children || [];
+    for (const post of posts) {
+      const title = post.data.title.toLowerCase();
+      const text = (post.data.selftext || '').toLowerCase();
+      const keywordLower = keyword.toLowerCase();
       
-      const posts = response.data?.data?.children || [];
-      for (const post of posts) {
+      // Only include if keyword actually appears in title or text
+      if (title.includes(keywordLower) || text.includes(keywordLower)) {
         results.push({
           title: post.data.title,
           subreddit: post.data.subreddit,
           score: post.data.score,
           comments: post.data.num_comments,
           url: `https://reddit.com${post.data.permalink}`,
-          text: post.data.selftext?.substring(0, 300) || ''
+          text: post.data.selftext?.substring(0, 500) || ''
         });
       }
-    } catch (e) {
-      console.error('Reddit search error:', e.message);
     }
+  } catch (e) {
+    console.error('Reddit search error:', e.message);
   }
   
+  // Remove duplicates
   const seen = new Set();
   return results.filter(r => {
     if (seen.has(r.url)) return false;
@@ -41,13 +47,14 @@ async function searchReddit(keyword) {
 }
 
 function extractQuestions(results) {
-  const questionWords = ['how', 'what', 'why', 'where', 'when', 'which', 'can i', 'should i', 'is it', 'does', 'do i'];
   const questions = [];
   
   for (const post of results) {
-    const title = post.title.toLowerCase();
-    if (questionWords.some(w => title.startsWith(w) || title.includes(` ${w}`))) {
-      questions.push(post.title);
+    const title = post.title;
+    // Check if it's a question
+    if (title.includes('?') || 
+        /^(how|what|why|where|when|which|can i|should i|is it|does|do i|has anyone|anyone know|any tips|any advice)/i.test(title)) {
+      questions.push(title);
     }
   }
   
@@ -55,19 +62,93 @@ function extractQuestions(results) {
 }
 
 function extractPainPoints(results) {
-  const painWords = ['frustrated', 'annoying', 'hate', 'problem', 'issue', 'struggle', 
-                     'difficult', 'hard', "can't", "won't", 'expensive', 'terrible',
-                     'worst', 'bad', 'disappointed', 'scared', 'afraid', 'worried'];
+  const painPhrases = [
+    'frustrated', 'annoying', 'annoyed', 'hate', 'problem', 'issue', 'struggle',
+    'difficult', 'hard to', "can't", "won't", 'expensive', 'terrible', 'awful',
+    'worst', 'bad experience', 'disappointed', 'scared', 'afraid', 'worried',
+    'stressed', 'anxiety', 'anxious', 'nervous', 'fear', 'help me', 'need help',
+    'driving me crazy', 'at my wits end', 'dont know what to do', 'desperate'
+  ];
+  
   const painPoints = [];
   
   for (const post of results) {
     const text = (post.title + ' ' + post.text).toLowerCase();
-    if (painWords.some(w => text.includes(w))) {
-      painPoints.push(post.title);
+    if (painPhrases.some(phrase => text.includes(phrase))) {
+      painPoints.push({
+        title: post.title,
+        snippet: post.text.substring(0, 150)
+      });
     }
   }
   
-  return [...new Set(painPoints)].slice(0, 10);
+  return painPoints.slice(0, 8);
+}
+
+function extractRelatedKeywords(results, mainKeyword) {
+  const wordCount = {};
+  const stopWords = ['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 
+                     'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 
+                     'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 
+                     'ought', 'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 
+                     'from', 'as', 'into', 'through', 'during', 'before', 'after', 'above',
+                     'below', 'between', 'under', 'again', 'further', 'then', 'once', 'here',
+                     'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'more',
+                     'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own',
+                     'same', 'so', 'than', 'too', 'very', 'just', 'and', 'but', 'if', 'or',
+                     'because', 'until', 'while', 'this', 'that', 'these', 'those', 'i', 
+                     'me', 'my', 'myself', 'we', 'our', 'you', 'your', 'he', 'him', 'his',
+                     'she', 'her', 'it', 'its', 'they', 'them', 'their', 'what', 'which',
+                     'who', 'whom', 'any', 'get', 'got', 'about', 'also', 'like', 'know',
+                     'think', 'want', 'going', 'really', 'even', 'much', 'dont', 'ive',
+                     'im', 'doesnt', 'didnt', 'cant', 'wont', 'isnt', 'arent', 'wasnt'];
+  
+  const mainWords = mainKeyword.toLowerCase().split(' ');
+  
+  for (const post of results) {
+    const text = (post.title + ' ' + post.text).toLowerCase();
+    const words = text.match(/\b[a-z]{3,}\b/g) || [];
+    
+    for (const word of words) {
+      if (!stopWords.includes(word) && !mainWords.includes(word)) {
+        wordCount[word] = (wordCount[word] || 0) + 1;
+      }
+    }
+  }
+  
+  // Sort by frequency and get top keywords
+  return Object.entries(wordCount)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 15)
+    .map(([word, count]) => ({ word, count }));
+}
+
+function generateContentIdeas(questions, painPoints, keyword) {
+  const ideas = [];
+  
+  // Turn questions into content ideas
+  for (const q of questions.slice(0, 5)) {
+    const idea = q
+      .replace(/\?/g, '')
+      .replace(/^(how|what|why|can i|should i|does anyone|has anyone|anyone)/i, '')
+      .trim();
+    
+    if (idea.length > 10) {
+      ideas.push(`"${q.substring(0, 60)}..." → Write a guide answering this`);
+    }
+  }
+  
+  // Turn pain points into content ideas
+  for (const p of painPoints.slice(0, 3)) {
+    ideas.push(`Address pain point: "${p.title.substring(0, 50)}..."`);
+  }
+  
+  // Add generic content templates
+  ideas.push(`"X Things Nobody Tells You About ${keyword}"`);
+  ideas.push(`"${keyword}: Common Mistakes and How to Avoid Them"`);
+  ideas.push(`"The Ultimate Guide to ${keyword} in 2025"`);
+  
+  return ideas.slice(0, 10);
 }
 
 app.post('/slack/commands/reddit', async (req, res) => {
@@ -82,7 +163,7 @@ app.post('/slack/commands/reddit', async (req, res) => {
   
   res.json({
     response_type: 'in_channel',
-    text: `🔍 Searching Reddit for "${keyword}"...`
+    text: `🔍 Searching Reddit for "${keyword}"... This may take a moment.`
   });
   
   const responseUrl = req.body.response_url;
@@ -91,18 +172,47 @@ app.post('/slack/commands/reddit', async (req, res) => {
     const results = await searchReddit(keyword);
     const questions = extractQuestions(results);
     const painPoints = extractPainPoints(results);
+    const relatedKeywords = extractRelatedKeywords(results, keyword);
+    const contentIdeas = generateContentIdeas(questions, painPoints, keyword);
     
-    let message = `*📊 Results for "${keyword}"*\n\n`;
+    let message = `*📊 Reddit Research for "${keyword}"*\n`;
+    message += `_Found ${results.length} relevant posts_\n\n`;
     
-    message += `*❓ Questions People Ask (${questions.length}):*\n`;
-    questions.forEach((q, i) => message += `${i + 1}. ${q}\n`);
+    // Questions section
+    message += `*❓ Questions People Are Asking:*\n`;
+    if (questions.length > 0) {
+      questions.forEach((q, i) => message += `${i + 1}. ${q}\n`);
+    } else {
+      message += `_No direct questions found_\n`;
+    }
     
-    message += `\n*😤 Pain Points (${painPoints.length}):*\n`;
-    painPoints.forEach((p, i) => message += `${i + 1}. ${p}\n`);
+    // Related keywords section
+    message += `\n*🔑 Related Keywords People Use:*\n`;
+    if (relatedKeywords.length > 0) {
+      message += relatedKeywords.map(k => `\`${k.word}\` (${k.count})`).join(', ') + '\n';
+    }
     
-    message += `\n*📝 Top Posts (${Math.min(results.length, 5)}):*\n`;
+    // Pain points section
+    message += `\n*😤 Pain Points & Problems:*\n`;
+    if (painPoints.length > 0) {
+      painPoints.forEach((p, i) => {
+        message += `${i + 1}. *${p.title.substring(0, 70)}*\n`;
+        if (p.snippet) {
+          message += `   _"${p.snippet.substring(0, 100)}..."_\n`;
+        }
+      });
+    } else {
+      message += `_No specific pain points found_\n`;
+    }
+    
+    // Content ideas section
+    message += `\n*💡 Content Ideas:*\n`;
+    contentIdeas.forEach((idea, i) => message += `${i + 1}. ${idea}\n`);
+    
+    // Top posts section
+    message += `\n*📝 Top Relevant Posts:*\n`;
     results.slice(0, 5).forEach((post, i) => {
-      message += `${i + 1}. r/${post.subreddit} - <${post.url}|${post.title.substring(0, 50)}...>\n`;
+      message += `${i + 1}. r/${post.subreddit} (⬆️${post.score}) - <${post.url}|${post.title.substring(0, 50)}...>\n`;
     });
     
     await axios.post(responseUrl, {
