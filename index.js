@@ -5,40 +5,15 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Get these from environment variables (set in Railway)
-const REDDIT_CLIENT_ID = process.env.REDDIT_CLIENT_ID;
-const REDDIT_CLIENT_SECRET = process.env.REDDIT_CLIENT_SECRET;
-const SEMRUSH_API_KEY = process.env.SEMRUSH_API_KEY;
-const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
-
-async function getRedditToken() {
-  const auth = Buffer.from(`${REDDIT_CLIENT_ID}:${REDDIT_CLIENT_SECRET}`).toString('base64');
-  const response = await axios.post(
-    'https://www.reddit.com/api/v1/access_token',
-    'grant_type=client_credentials',
-    {
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'User-Agent': 'KeywordBot/1.0'
-      }
-    }
-  );
-  return response.data.access_token;
-}
-
-async function searchReddit(keyword, token) {
+async function searchReddit(keyword) {
   const results = [];
-  const queries = [`${keyword} help`, `${keyword} problem`, `${keyword} recommend`, keyword];
+  const queries = [`${keyword}+help`, `${keyword}+problem`, `${keyword}+recommend`, keyword];
   
   for (const query of queries) {
     try {
-      const response = await axios.get('https://oauth.reddit.com/search', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'User-Agent': 'KeywordBot/1.0'
-        },
-        params: { q: query, sort: 'relevance', limit: 10, t: 'year' }
+      const response = await axios.get(`https://www.reddit.com/search.json`, {
+        params: { q: query, sort: 'relevance', limit: 10, t: 'year' },
+        headers: { 'User-Agent': 'KeywordBot/1.0' }
       });
       
       const posts = response.data?.data?.children || [];
@@ -57,7 +32,6 @@ async function searchReddit(keyword, token) {
     }
   }
   
-  // Remove duplicates
   const seen = new Set();
   return results.filter(r => {
     if (seen.has(r.url)) return false;
@@ -96,34 +70,6 @@ function extractPainPoints(results) {
   return [...new Set(painPoints)].slice(0, 10);
 }
 
-async function getSemrushData(keyword) {
-  if (!SEMRUSH_API_KEY) return null;
-  
-  try {
-    const response = await axios.get('https://api.semrush.com/', {
-      params: {
-        type: 'phrase_this',
-        key: SEMRUSH_API_KEY,
-        phrase: keyword,
-        database: 'us'
-      }
-    });
-    
-    const lines = response.data.trim().split('\n');
-    if (lines.length >= 2) {
-      const headers = lines[0].split(';');
-      const values = lines[1].split(';');
-      const data = {};
-      headers.forEach((h, i) => data[h] = values[i]);
-      return data;
-    }
-  } catch (e) {
-    console.error('SEMrush error:', e.message);
-  }
-  return null;
-}
-
-// Slack slash command endpoint
 app.post('/slack/commands/reddit', async (req, res) => {
   const keyword = req.body.text?.trim();
   
@@ -134,30 +80,19 @@ app.post('/slack/commands/reddit', async (req, res) => {
     });
   }
   
-  // Respond immediately to avoid timeout
   res.json({
     response_type: 'in_channel',
-    text: `🔍 Searching Reddit for "${keyword}"... Results coming shortly!`
+    text: `🔍 Searching Reddit for "${keyword}"...`
   });
   
-  // Process in background and send results via response_url
   const responseUrl = req.body.response_url;
   
   try {
-    const token = await getRedditToken();
-    const results = await searchReddit(keyword, token);
+    const results = await searchReddit(keyword);
     const questions = extractQuestions(results);
     const painPoints = extractPainPoints(results);
-    const semrush = await getSemrushData(keyword);
     
     let message = `*📊 Results for "${keyword}"*\n\n`;
-    
-    if (semrush) {
-      message += `*📈 Keyword Data:*\n`;
-      message += `• Search Volume: ${semrush['Search Volume'] || 'N/A'}\n`;
-      message += `• CPC: $${semrush['CPC'] || 'N/A'}\n`;
-      message += `• Competition: ${semrush['Competition'] || 'N/A'}\n\n`;
-    }
     
     message += `*❓ Questions People Ask (${questions.length}):*\n`;
     questions.forEach((q, i) => message += `${i + 1}. ${q}\n`);
@@ -184,7 +119,6 @@ app.post('/slack/commands/reddit', async (req, res) => {
   }
 });
 
-// Health check
 app.get('/', (req, res) => {
   res.send('Reddit Keyword Bot is running!');
 });
